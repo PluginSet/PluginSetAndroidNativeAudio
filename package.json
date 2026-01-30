@@ -1,0 +1,17 @@
+{
+  "name": "com.pluginset.ana",
+  "displayName": "PluginSet Android Native Audio",
+  "version": "1.0.0",
+  "unity": "2018.4",
+  "description": "A plugin for play audio in android native",
+  "keywords": [
+    "pluginset"
+  ],
+  "dependencies": {
+    "com.pluginset.core": "1.0.0"
+  },
+  "author": {
+    "name": "LyneXiao",
+    "email": "lixonxs@icloud.com"
+  }
+}

@@ -1,0 +1,19 @@
+{
+    "name": "PluginSet.AndroidNativeAudio",
+    "rootNamespace": "",
+    "references": [
+        "PluginSet.Core"
+    ],
+    "includePlatforms": [
+        "Android",
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
