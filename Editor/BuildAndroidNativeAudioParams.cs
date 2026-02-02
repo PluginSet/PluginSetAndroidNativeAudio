@@ -28,6 +28,7 @@ namespace PluginSet.AndroidNativeAudio.Editor
         public int MaxSoundStream = 16;
 
         [Tooltip("原生音频配置")]
+        [SerializableDict("stringValue", "")]
         public SerializableDict<string, NativeAudioConfig> NativeAudioConfigs = new SerializableDict<string, NativeAudioConfig>();
     }
 }

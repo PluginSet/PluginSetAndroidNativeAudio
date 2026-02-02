@@ -3,23 +3,30 @@ using System.Collections.Generic;
 using System.IO;
 using PluginSet.Core;
 using UnityEngine;
+using Logger = PluginSet.Core.Logger;
 
 namespace PluginSet.AndroidNativeAudio
 {
     public static class ANASoundsManager
     {
+        private static readonly Logger Logger = LoggerManager.GetLogger("ANASoundsManager");
+        
         private static bool _isPaused = false;
-        private static Dictionary<string, int> _preloadMusics = new Dictionary<string, int>();
-        private static HashSet<string> _loadingMusics = new HashSet<string>();
-        private static Dictionary<string, int> _preloadSounds = new Dictionary<string, int>();
-        private static HashSet<string> _loadingSounds = new HashSet<string>();
+        private static readonly Dictionary<string, int> PreloadMusics = new Dictionary<string, int>();
+        private static readonly HashSet<string> LoadingMusics = new HashSet<string>();
+        private static readonly Dictionary<string, int> PreloadSounds = new Dictionary<string, int>();
+        private static readonly HashSet<string> LoadingSounds = new HashSet<string>();
+        
+        private static float _musicBaseVolume = 1.0f;
+        private static float _soundBaseVolume = 1.0f;
 
         private static int _round = 0;
         
-        private static Dictionary<string, PluginAndroidNativeAudioConfig.NativeAudioConfig> _nativeAudioConfigs = new Dictionary<string, PluginAndroidNativeAudioConfig.NativeAudioConfig>();
+        private static readonly Dictionary<string, PluginAndroidNativeAudioConfig.NativeAudioConfig> NativeAudioConfigs = new Dictionary<string, PluginAndroidNativeAudioConfig.NativeAudioConfig>();
 
         private static string _currentMusic;
-        private static int _currentMusicId;
+        private static int _currentMusicId = -1;
+        private static int _initPoolCount = -1;
 
 #if ANA_USE_PERSISTENT_DATA_PATH
         private static string _patchesSavePrefix = "";
@@ -27,10 +34,20 @@ namespace PluginSet.AndroidNativeAudio
         
         private static string GetFileName(string name)
         {
+            if (!NativeAudioConfigs.TryGetValue(name, out var config))
+            {
+                return null;
+            }
+
+            name += Path.GetExtension(config.AssetPath);
+            var fileName = ResourcesManager.Instance.GetRealFilePath(name);
+            if (string.IsNullOrEmpty(fileName))
+                return null;
+
 #if ANA_USE_PERSISTENT_DATA_PATH
-            return _patchesSavePrefix + name;
+            return _patchesSavePrefix + fileName;
 #else
-            return name;
+            return fileName;
 #endif
         }
 
@@ -59,12 +76,18 @@ namespace PluginSet.AndroidNativeAudio
 
             _isPaused = pauseStatus;
             ANAMusic.OnApplicationPause(pauseStatus);
+            CheckResumeMusic();
         }
 
         public static void Init(int maxSoundStream, List<PluginAndroidNativeAudioConfig.NativeAudioConfig> nativeAudioConfigs)
         {
-            AndroidNativeAudio.makePool(maxSoundStream);
-            _nativeAudioConfigs.Clear();
+            if (_initPoolCount != maxSoundStream)
+            {
+                AndroidNativeAudio.makePool(maxSoundStream);
+                _initPoolCount = maxSoundStream;
+            }
+            
+            NativeAudioConfigs.Clear();
             _round++;
 
 #if ANA_USE_PERSISTENT_DATA_PATH
@@ -79,7 +102,7 @@ namespace PluginSet.AndroidNativeAudio
             
             foreach (var nativeAudioConfig in nativeAudioConfigs)
             {
-                _nativeAudioConfigs.Add(nativeAudioConfig.Name, nativeAudioConfig);
+                NativeAudioConfigs.Add(nativeAudioConfig.Name, nativeAudioConfig);
                 if (nativeAudioConfig.AutoPreload)
                 {
                     switch (nativeAudioConfig.Type)
@@ -99,136 +122,186 @@ namespace PluginSet.AndroidNativeAudio
 
         public static void Release()
         {
-            foreach (var pair in _preloadMusics)
+            foreach (var pair in PreloadMusics)
             {
                 ANAMusic.release(pair.Value);
             }
 
-            foreach (var pair in _preloadSounds)
+            foreach (var pair in PreloadSounds)
             {
                 AndroidNativeAudio.unload(pair.Value);
             }
             
-            _preloadMusics.Clear();
-            _preloadSounds.Clear();
-            _loadingMusics.Clear();
-            _loadingSounds.Clear();
+            PreloadMusics.Clear();
+            PreloadSounds.Clear();
+            LoadingMusics.Clear();
+            LoadingSounds.Clear();
         }
 
-        private static void PreloadMusic(string name)
+        public static void PreloadMusic(string name)
         {
     // #if UNITY_ANDROID && !UNITY_EDITOR
             PreloadAnaMusic(name);
     // #endif
         }
 
-        private static void PreloadSound(string name)
+        public static void PreloadSound(string name)
         {
 // #if UNITY_ANDROID && !UNITY_EDITOR
             PreloadAnaSound(name);
 // #endif
         }
+
+        public static void ReleaseMusic(string name)
+        {
+            var key = CacheKey(name);
+            if (PreloadMusics.TryGetValue(key, out var id))
+            {
+                ANAMusic.release(id);
+                PreloadMusics.Remove(key);
+            }
+
+            LoadingMusics.Remove(key);
+        }
+
+        public static void ReleaseSound(string name)
+        {
+            var key = CacheKey(name);
+            if (PreloadSounds.TryGetValue(key, out var id))
+            {
+                AndroidNativeAudio.unload(id);
+                PreloadSounds.Remove(key);
+            }
+
+            LoadingSounds.Remove(key);
+        }
         
         private static int PreloadAnaMusic(string name)
         {
+            var fileName =  GetFileName(name);
+            Logger.Debug($"PreloadAnaMusic ==================== = {name}:: {fileName}");
+            if (string.IsNullOrEmpty(fileName))
+                return -1;
+            
             var key = CacheKey(name);
-            if (!_loadingMusics.Add(key))
+            if (PreloadMusics.TryGetValue(key, out var streamId))
+                return streamId;
+            
+            if (!LoadingMusics.Add(key))
                 return -1;
 
-            if (_preloadMusics.TryGetValue(key, out var streamId))
-                return streamId;
-
-            var id = ANAMusic.load(GetFileName(name), UsePersistentDataPath, true, id =>
+            var id = ANAMusic.load(fileName, UsePersistentDataPath, true, id =>
             {
-                if (_preloadMusics.TryGetValue(key, out var value))
+                if (!LoadingMusics.Contains(key))
                 {
-                    _loadingMusics.Remove(key);
+                    if (id != -1)
+                        ANAMusic.release(id);
+                    return;
+                }
+                
+                LoadingMusics.Remove(key);
+                if (id == -1) return;
+                
+                if (PreloadMusics.TryGetValue(key, out var value))
+                {
+                    Logger.Warn($"PreloadAnaMusic ============= callback preload music repeated >> {name}: {key} >>  {value}:: {id} ");
                     if (value != id)
                     {
                         ANAMusic.release(value);
                     }
-                    return;
-                }
-                
-                if (_loadingMusics.Contains(key))
-                {
-                    _loadingMusics.Remove(key);
-                    _preloadMusics.Add(key, id);
-                    
-                    if (_currentMusic == name && !_isPaused)
-                    {
-                        PlayAnaMusicInternal(id);
-                    }
                 }
                 else
                 {
-                    ANAMusic.release(id);
+                    PreloadMusics.Add(key, id);
+                    if (_currentMusic == name && !_isPaused)
+                    {
+                        PlayAnaMusicInternal(id, false);
+                    }
                 }
             });
 
-            if (id != -1)
-            {
-                _loadingMusics.Remove(key);
-                _preloadMusics.Add(key, id);
-            }
+            // 确保已加载完，在此不返回id
+            // if (id != -1)
+            // {
+            //     _loadingMusics.Remove(key);
+            //     _preloadMusics.Add(key, id);
+            // }
             
-            return id;
+            return -1;
         }
 
         private static int PreloadAnaSound(string name)
         {
+            var fileName = GetFileName(name);
+            Logger.Debug($"PreloadAnaSound ==================== = {name}:: {fileName}");
+            if (string.IsNullOrEmpty(fileName))
+                return -1;
+            
             var key =  CacheKey(name);
-            if (!_loadingSounds.Add(key))
+            if (PreloadSounds.TryGetValue(key, out var streamId))
+                return streamId;
+            
+            if (!LoadingSounds.Add(key))
                 return -1;
 
-            if (_preloadSounds.TryGetValue(key, out var streamId))
-                return streamId;
-
-            var id = AndroidNativeAudio.load(GetFileName(name), UsePersistentDataPath, id =>
+            var id = AndroidNativeAudio.load(fileName, UsePersistentDataPath, id =>
             {
-                if (_preloadSounds.TryGetValue(key, out var value))
+                if (!LoadingSounds.Contains(key))
                 {
-                    _loadingSounds.Remove(key);
+                    if (id != -1)
+                        AndroidNativeAudio.unload(id);
+                    return;
+                }
+
+                LoadingSounds.Remove(key);
+                if (id == -1) return;
+                
+                if (PreloadSounds.TryGetValue(key, out var value))
+                {
+                    Logger.Warn($"PreloadAnaSound ============= callback preload music repeated >> {name}: {key} >>  {value}:: {id} ");
                     if (value != id)
                     {
                         AndroidNativeAudio.unload(value);
                     }
-                    return;
-                }
-
-                if (_loadingSounds.Contains(key))
-                {
-                    _loadingSounds.Remove(key);
-                    _preloadSounds.Add(key, id);
                 }
                 else
                 {
-                    AndroidNativeAudio.unload(id);
+                    PreloadSounds.Add(key, id);
                 }
             });
 
-            if (id != -1)
-            {
-                _loadingSounds.Remove(key);
-                _preloadSounds.Add(key, id);
-            }
+            // 确保已加载完，在此不返回id
+            // if (id != -1)
+            // {
+            //     _loadingSounds.Remove(key);
+            //     _preloadSounds.Add(key, id);
+            // }
 
-            return id;
+            return -1;
         }
 
-        private static void PlayAnaMusicInternal(int id)
+        private static void PlayAnaMusicInternal(int id, bool replay)
         {
+            Logger.Debug($"PlayAnaMusicInternal =============  {id}");
             _currentMusicId = id;
             ANAMusic.play(id);
             ANAMusic.setLooping(id, true);
+            ANAMusic.setVolume(id, _musicBaseVolume, _musicBaseVolume);
+            if (replay)
+                ANAMusic.seekTo(id, 0);
         }
 
-        private static void PlayAnaMusic(string musicName)
+        private static void PlayAnaMusic(string musicName, bool replay)
         {
             var id = PreloadAnaMusic(musicName);
             if (id != -1)
             {
-                PlayAnaMusicInternal(id);
+                PlayAnaMusicInternal(id, replay);
+            }
+            else
+            {
+                // 标记需要使用ana进行播放
+                _currentMusicId = -2;
             }
         }
 
@@ -239,18 +312,22 @@ namespace PluginSet.AndroidNativeAudio
             AndroidNativeAudio.play(id, volume, volume, priority);
         }
         
-        public static void PlayMusic(string musicName, bool replay = false)
+        public static bool PlayMusic(string musicName, bool replay = false)
         {
-            if (!replay && musicName == _currentMusic) return;
+            if (!NativeAudioConfigs.ContainsKey(musicName))
+                return false;
+            
+            if (!replay && musicName == _currentMusic) return true;
             StopMusic();
             
             if (string.IsNullOrEmpty(musicName))
-                return;
+                return true;
             
             _currentMusic = musicName;
-            if (_isPaused) return;
+            if (_isPaused) return true;
             
-            PlayAnaMusic(musicName);
+            PlayAnaMusic(musicName, replay);
+            return true;
         }
 
         public static void StopMusic(string musicName = "")
@@ -258,17 +335,63 @@ namespace PluginSet.AndroidNativeAudio
             if (!string.IsNullOrEmpty(musicName) &&  musicName != _currentMusic) return;
             
             // stop ana music
-            if (_currentMusicId != -1)
+            if (_currentMusicId >= 0)
+            {
                 ANAMusic.pause(_currentMusicId);
+            }
             _currentMusicId = -1;
             _currentMusic = null;
         }
 
-        public static void PlaySound(string soundName, float volume = 1, int priority = 1)
+        private static void CheckResumeMusic()
         {
-            if (_isPaused) return;
+            if (!_isPaused && _musicBaseVolume > 0)
+            {
+                ANAMusic.resumeAll();
+                if (!string.IsNullOrEmpty(_currentMusic) && _currentMusicId == -2)
+                    PlayMusic(_currentMusic, true);
+            }
+        }
+
+        public static bool PlaySound(string soundName, float volume = 1, int priority = 1)
+        {
+            if (!NativeAudioConfigs.ContainsKey(soundName))
+                return false;
             
-            PlayAnaSound(soundName, volume, 65535 - priority);
+            if (_isPaused) return true;
+            
+            PlayAnaSound(soundName, volume * _soundBaseVolume, 65535 - priority);
+            return true;
+        }
+
+        public static void SetMusicVolume(float volume)
+        {
+            var lastVolume = _musicBaseVolume;
+            _musicBaseVolume = volume;
+            if (_currentMusicId >= 0)
+            {
+                ANAMusic.setVolume(_currentMusicId, volume, volume);
+            }
+            if (volume <= 0 && lastVolume > 0)
+            {
+                ANAMusic.pauseAll();
+            } else if (lastVolume <= 0 && volume > 0)
+            {
+                CheckResumeMusic();
+            }
+        }
+
+        public static void SetSoundVolume(float volume)
+        {
+            var lastVolume = _soundBaseVolume;
+            _soundBaseVolume = volume;
+            if (volume <= 0 && lastVolume > 0)
+            {
+                AndroidNativeAudio.pauseAll();
+            } else if (lastVolume <= 0 && volume > 0)
+            {
+                AndroidNativeAudio.resumeAll();
+            }
         }
     }
 }

@@ -11,6 +11,8 @@
 
 using System;
 using UnityEngine;
+using System.IO;
+using System.Collections.Generic;
 
 namespace PluginSet.AndroidNativeAudio
 {
@@ -126,7 +128,6 @@ namespace PluginSet.AndroidNativeAudio
 
 		var id = mediaPlayer.Call<int>("getAudioSessionId");
 		_mediaPlayers.Add(id, new AndroidMediaPlayer(mediaPlayer, id, playInBackground));
-		CheckPauseMonitor(playInBackground);
 		return id;
 	}
 
@@ -234,7 +235,6 @@ namespace PluginSet.AndroidNativeAudio
 			Debug.Log(_logPrefix + "setPlayInBackground(" + musicID + ", " + playInBackground + ")");
 
 		_mediaPlayers[musicID].PlayInBackground = playInBackground;
-		CheckPauseMonitor(playInBackground);
 	}
 
 
@@ -281,17 +281,6 @@ namespace PluginSet.AndroidNativeAudio
 		if (!_mediaPlayers.ContainsKey(musicID))
 			throw new InvalidOperationException(_logPrefix + "Music ID not found.");
 	}
-
-
-	static void CheckPauseMonitor(bool playInBackground)
-	{
-		if (!playInBackground && _applicationPauseMonitor == null)
-		{
-			_applicationPauseMonitor = new GameObject("ANA Music Application Pause Monitor");
-			_applicationPauseMonitor.AddComponent<ANAMusicBackgroundPause>();
-		}
-	}
-
 
 #else
 

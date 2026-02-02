@@ -27,7 +27,7 @@ namespace PluginSet.AndroidNativeAudio.Editor
                 {
                     Type = pair.Value.Type,
                     Name = pair.Key,
-                    AssetPath = AssetDatabase.GetAssetPath(pair.Value.AudioClip),
+                    AssetPath = AssetDatabase.GetAssetPath(pair.Value.AudioClip).Replace("\\", "/"),
                     AutoPreload = pair.Value.AutoPreload,
                 };
 
@@ -41,10 +41,14 @@ namespace PluginSet.AndroidNativeAudio.Editor
             }
         }
 
-        [BuildProjectCompleted]
-        public static void BuildProjectCompleted(BuildProcessorContext context, string exportPath)
+        [OnBuildBundlesCompleted]
+        public static void OnBuildBundlesCompleted(BuildProcessorContext context, string streamingPath,
+            string streamingName, AssetBundleManifest manifest, bool patchBundle = false)
         {
             if (context.BuildTarget != BuildTarget.Android)
+                return;
+            
+            if (context.IsBuildingPatches())
                 return;
 
             var buildParams = context.BuildChannels.Get<BuildAndroidNativeAudioParams>();
@@ -54,10 +58,6 @@ namespace PluginSet.AndroidNativeAudio.Editor
             if (buildParams.NativeAudioConfigs.Pairs.Length <= 0)
                 return;
 
-            var assetsPath = Global.GetProjectAssetsPath(context.BuildTarget, exportPath);
-            if (string.IsNullOrEmpty(assetsPath))
-                return;
-
             foreach (var pair in buildParams.NativeAudioConfigs.Pairs)
             {
                 var file = AssetDatabase.GetAssetPath(pair.Value.AudioClip);
@@ -65,10 +65,9 @@ namespace PluginSet.AndroidNativeAudio.Editor
                 if (string.IsNullOrEmpty(file) || !File.Exists(file))
                     throw new Exception("Cannot find Audio file: " + file);
 
-                var copyPath = pair.Key;
-                var fullPath = Path.GetFullPath(Path.Combine(assetsPath, copyPath));
+                var copyPath = pair.Key + Path.GetExtension(file);
+                var fullPath = Path.GetFullPath(Path.Combine(streamingPath, copyPath));
                 Global.CheckAndCopyFile(file, fullPath);
-                context.ExtendStreamingFiles(copyPath);
             }
         }
     }

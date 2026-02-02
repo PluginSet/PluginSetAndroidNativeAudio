@@ -8,7 +8,7 @@
     "pluginset"
   ],
   "dependencies": {
-    "com.pluginset.core": "1.0.0"
+    "com.pluginset.core": "1.0.1"
   },
   "author": {
     "name": "LyneXiao",
