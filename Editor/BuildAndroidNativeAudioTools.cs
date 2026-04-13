@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using PluginSet.Core;
 using PluginSet.Core.Editor;
@@ -10,65 +11,164 @@ namespace PluginSet.AndroidNativeAudio.Editor
     [BuildTools]
     public static class BuildAndroidNativeAudioTools
     {
-        [OnSyncEditorSetting]
-        public static void OnSyncEditorSetting(BuildProcessorContext context)
-        {
-            var buildParams = context.BuildChannels.Get<BuildAndroidNativeAudioParams>();
-            if (buildParams.LoadNativeAudioFromCache && !buildParams.UseUnityAudioForce)
-                context.Symbols.Add("ANA_USE_PERSISTENT_DATA_PATH");
-            
-            var useUnityAudioForce = buildParams.UseUnityAudioForce;
-            var pluginConfig = context.Get<PluginSetConfig>("pluginsConfig");
-            var config = pluginConfig.AddConfig<PluginAndroidNativeAudioConfig>();
-            config.MaxSoundStream = buildParams.MaxSoundStream;
-            foreach (var pair in buildParams.NativeAudioConfigs.Pairs)
-            {
-                var item = new PluginAndroidNativeAudioConfig.NativeAudioConfig()
-                {
-                    Type = pair.Value.Type,
-                    Name = pair.Key,
-                    AssetPath = AssetDatabase.GetAssetPath(pair.Value.AudioClip).Replace("\\", "/"),
-                    AutoPreload = pair.Value.AutoPreload,
-                };
-
-                if (useUnityAudioForce || pair.Value.UseUnityAudio || context.BuildTarget != BuildTarget.Android)
-                {
-                    item.Asset = pair.Value.AudioClip;
-                    item.AutoPreload = false;
-                }
-
-                config.NativeAudioConfigs.Add(item);
-            }
-        }
-
-        [OnBuildBundlesCompleted]
-        public static void OnBuildBundlesCompleted(BuildProcessorContext context, string streamingPath,
-            string streamingName, AssetBundleManifest manifest, bool patchBundle = false)
+        [OnBuildPatches(int.MinValue)]
+        [OnBuildBundles(int.MinValue)]
+        [OnSyncEditorSetting(int.MinValue)]
+        public static void OnSyncEditorSettingFirst(BuildProcessorContext context)
         {
             if (context.BuildTarget != BuildTarget.Android)
                 return;
             
-            if (context.IsBuildingPatches())
-                return;
-
             var buildParams = context.BuildChannels.Get<BuildAndroidNativeAudioParams>();
-            if (buildParams.UseUnityAudioForce)
+            if (!buildParams.Enable)
                 return;
-
-            if (buildParams.NativeAudioConfigs.Pairs.Length <= 0)
+            
+            context.SetSupportAudioPatch(true);
+        }
+        
+        [OnSyncEditorSetting(int.MaxValue)]
+        public static void OnSyncEditorSettingLast(BuildProcessorContext context)
+        {
+            if (!context.IsSupportAudioPatch())
                 return;
+            
+            context.Symbols.Add("ENABLE_ANA_PLUGIN");
+            
+            var buildParams = context.BuildChannels.Get<BuildAndroidNativeAudioParams>();
+            if (buildParams.LoadNativeAudioFromCache)
+                context.Symbols.Add("ANA_USE_PERSISTENT_DATA_PATH");
+            
+            var pluginConfig = context.Get<PluginSetConfig>("pluginsConfig");
+            var config = pluginConfig.AddConfig<PluginAndroidNativeAudioConfig>("NativeAudioConfig");
+            config.AutoLoadAllAudios = buildParams.AutoLoadAllAudios;
 
-            foreach (var pair in buildParams.NativeAudioConfigs.Pairs)
+            var musicPatchFiles = context.GetMusicPatchFiles();
+            if (!Application.isBatchMode)
             {
-                var file = AssetDatabase.GetAssetPath(pair.Value.AudioClip);
-                file = Path.Combine(Application.dataPath, "..", file);
-                if (string.IsNullOrEmpty(file) || !File.Exists(file))
-                    throw new Exception("Cannot find Audio file: " + file);
-
-                var copyPath = pair.Key + Path.GetExtension(file);
-                var fullPath = Path.GetFullPath(Path.Combine(streamingPath, copyPath));
-                Global.CheckAndCopyFile(file, fullPath);
+                foreach (var pair in musicPatchFiles)
+                {
+                    var patchName = pair.Key;
+                    foreach (var info in pair.Value)
+                    {
+                        var item = new NativeAudioConfig()
+                        {
+                            Type = AudioType.Music,
+                            Name = info.Name.ToLower(),
+                            FileName = $"{Path.GetFileName(info.Name)}_{patchName}" + Path.GetExtension(info.File),
+                            OwnPatch = patchName,
+                            AssetPath = info.File,
+                            BundleName = info.Bundle
+                        };
+                        config.NativeAudioConfigs.Add(item);
+                    }
+                }
             }
+            musicPatchFiles.Clear();
+
+            var soundPatchFiles = context.GetSoundPatchFiles();
+            if (!Application.isBatchMode)
+            {
+                foreach (var pair in soundPatchFiles)
+                {
+                    var patchName = pair.Key;
+                    foreach (var info in pair.Value)
+                    {
+                        var item = new NativeAudioConfig()
+                        {
+                            Type = AudioType.Sound,
+                            Name = info.Name.ToLower(),
+                            FileName = $"{Path.GetFileName(info.Name)}_{patchName}" + Path.GetExtension(info.File),
+                            OwnPatch = patchName,
+                            AssetPath = info.File,
+                            BundleName = info.Bundle,
+                        };
+                        config.NativeAudioConfigs.Add(item);
+                    }
+                }
+            }
+            soundPatchFiles.Clear();
+        }
+        
+        [OnBuildBundlesCompleted]
+        public static void OnBuildBundlesCompleted(BuildProcessorContext context, string streamingPath,
+            string streamingName, AssetBundleManifest manifest, bool patchBundle = false)
+        {
+            if (!context.IsSupportAudioPatch())
+                return;
+
+            var configs = new List<NativeAudioConfig>();
+            var musicPatchFiles = context.GetMusicPatchFiles();
+            foreach (var pair in musicPatchFiles)
+            {
+                var patchName = pair.Key;
+                if (patchName != streamingName)
+                {
+                    Debug.LogError($"Music patch file own by {patchName} is collected when build {streamingName}");
+                    continue;
+                }
+                
+                foreach (var info in pair.Value)
+                {
+                    var file = info.File;
+                    file = Path.Combine(Application.dataPath, "..", file);
+                    if (string.IsNullOrEmpty(file) || !File.Exists(file))
+                        throw new Exception("Cannot find Audio file: " + file);
+
+                    var copyPath = $"{Path.GetFileName(info.Name)}_{patchName}" + Path.GetExtension(file);
+                    var fullPath = Path.GetFullPath(Path.Combine(streamingPath, copyPath));
+                    Global.CheckAndCopyFile(file, fullPath);
+                    
+                    var item = new NativeAudioConfig()
+                    {
+                        Type = AudioType.Music,
+                        Name = info.Name.ToLower(),
+                        FileName = copyPath,
+                        OwnPatch = patchName,
+                        AssetPath = info.File,
+                        BundleName = info.Bundle,
+                    };
+                    configs.Add(item);
+                }
+            }
+
+            var soundPatchFiles = context.GetSoundPatchFiles();
+            foreach (var pair in soundPatchFiles)
+            {
+                var patchName = pair.Key;
+                if (patchName != streamingName)
+                {
+                    Debug.LogError($"Sound patch file own by {patchName} is collected when build {streamingName}");
+                    continue;
+                }
+                
+                foreach (var info in pair.Value)
+                {
+                    var file = info.File;
+                    file = Path.Combine(Application.dataPath, "..", file);
+                    if (string.IsNullOrEmpty(file) || !File.Exists(file))
+                        throw new Exception("Cannot find Audio file: " + file);
+
+                    var copyPath = $"{Path.GetFileName(info.Name)}_{patchName}" + Path.GetExtension(file);
+                    var fullPath = Path.GetFullPath(Path.Combine(streamingPath, copyPath));
+                    Global.CheckAndCopyFile(file, fullPath);
+                    
+                    var item = new NativeAudioConfig()
+                    {
+                        Type = AudioType.Sound,
+                        Name = info.Name.ToLower(),
+                        FileName = copyPath,
+                        OwnPatch = patchName,
+                        AssetPath = info.File,
+                        BundleName = info.Bundle,
+                    };
+                    configs.Add(item);
+                }
+            }
+
+            var audioJsonFile = Path.Combine(streamingPath, $"audio_config_{streamingName}.json");
+            File.WriteAllText(audioJsonFile, JsonUtil.ToJson(configs));
+            musicPatchFiles.Clear();
+            soundPatchFiles.Clear();
         }
     }
 }

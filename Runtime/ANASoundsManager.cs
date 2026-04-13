@@ -1,6 +1,12 @@
+#if ENABLE_ANA_PLUGIN
+#if UNITY_EDITOR
+// #define USE_RESOURCE_CONFIG
+#endif
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Text;
 using PluginSet.Core;
 using UnityEngine;
 using Logger = PluginSet.Core.Logger;
@@ -9,46 +15,67 @@ namespace PluginSet.AndroidNativeAudio
 {
     public static class ANASoundsManager
     {
-        private static readonly Logger Logger = LoggerManager.GetLogger("ANASoundsManager");
+        internal static readonly Logger Logger = LoggerManager.GetLogger("ANASoundsManager");
+
+        private static readonly int InvalidAudioId = AudioEngineBridge.InvalidAudioId;
         
         private static bool _isPaused = false;
-        private static readonly Dictionary<string, int> PreloadMusics = new Dictionary<string, int>();
-        private static readonly HashSet<string> LoadingMusics = new HashSet<string>();
-        private static readonly Dictionary<string, int> PreloadSounds = new Dictionary<string, int>();
-        private static readonly HashSet<string> LoadingSounds = new HashSet<string>();
+        private static readonly Dictionary<string, string> PreloadMusics = new Dictionary<string, string>();
+        private static readonly Dictionary<string, string> PreloadSounds = new Dictionary<string, string>();
         
         private static float _musicBaseVolume = 1.0f;
         private static float _soundBaseVolume = 1.0f;
 
+        private static bool _musicEnable = true;
+        private static bool _soundEnable = true;
+
         private static int _round = 0;
-        
-        private static readonly Dictionary<string, PluginAndroidNativeAudioConfig.NativeAudioConfig> NativeAudioConfigs = new Dictionary<string, PluginAndroidNativeAudioConfig.NativeAudioConfig>();
+
+        private static readonly Dictionary<string, string> PatchResourceVersion = new Dictionary<string, string>();
+        private static readonly Dictionary<string, Dictionary<string, NativeAudioConfig>> NativeAudioConfigs = new Dictionary<string, Dictionary<string, NativeAudioConfig>>();
+        private static readonly Dictionary<string, List<NativeAudioConfig>> PatchAudioConfigs = new Dictionary<string, List<NativeAudioConfig>>();
 
         private static string _currentMusic;
-        private static int _currentMusicId = -1;
-        private static int _initPoolCount = -1;
 
-#if ANA_USE_PERSISTENT_DATA_PATH
         private static string _patchesSavePrefix = "";
-#endif
-        
-        private static string GetFileName(string name)
+
+        private static NativeAudioConfig? GetAudio(string name)
         {
-            if (!NativeAudioConfigs.TryGetValue(name, out var config))
+            name = name.ToLower();
+            if (!NativeAudioConfigs.TryGetValue(name, out var dict))
+                return null;
+
+            if (dict.Count == 1)
             {
+                return dict.First().Value;
+            }
+            
+            var searchPatches = ResourcesManager.Instance.SearchPaths;
+            foreach (var patch in searchPatches)
+            {
+                if (dict.TryGetValue(patch, out var config))
+                    return config;
+
                 return null;
             }
 
-            name += Path.GetExtension(config.AssetPath);
+            return null;
+        }
+        
+        private static string GetFileName(in NativeAudioConfig config)
+        {
+#if UNITY_EDITOR
+            if (string.IsNullOrEmpty(_patchesSavePrefix))
+            {
+                return config.AssetPath;
+            }
+#endif
+            var name = config.FileName;
             var fileName = ResourcesManager.Instance.GetRealFilePath(name);
             if (string.IsNullOrEmpty(fileName))
                 return null;
 
-#if ANA_USE_PERSISTENT_DATA_PATH
             return _patchesSavePrefix + fileName;
-#else
-            return fileName;
-#endif
         }
 
         private static bool UsePersistentDataPath
@@ -63,9 +90,9 @@ namespace PluginSet.AndroidNativeAudio
             }
         }
 
-        private static string CacheKey(string name)
+        private static string CacheKey(in NativeAudioConfig config)
         {
-            return $"{name}_{_round}";
+            return $"{config.Name}_{config.OwnPatch}_{_round}";
         }
         
         
@@ -75,71 +102,154 @@ namespace PluginSet.AndroidNativeAudio
                 return;
 
             _isPaused = pauseStatus;
-            ANAMusic.OnApplicationPause(pauseStatus);
-            CheckResumeMusic();
+            if (_isPaused)
+                AudioEngineBridge.EnterBackground();
+            else
+                AudioEngineBridge.EnterForeground();
+        }
+        
+
+        [AOT.MonoPInvokeCallback(typeof(AudioEngineBridge.LogCallback))]
+        private static void LogCallback(string msg)
+        {
+            Debug.Log("[AudioEngine] " + msg);
         }
 
-        public static void Init(int maxSoundStream, List<PluginAndroidNativeAudioConfig.NativeAudioConfig> nativeAudioConfigs)
+        public static void Init(List<NativeAudioConfig> nativeAudioConfigs)
         {
-            if (_initPoolCount != maxSoundStream)
-            {
-                AndroidNativeAudio.makePool(maxSoundStream);
-                _initPoolCount = maxSoundStream;
-            }
-            
+            Logger.SetLocalLevel(0);
             NativeAudioConfigs.Clear();
             _round++;
 
-#if ANA_USE_PERSISTENT_DATA_PATH
-            var persistent = Path.GetFullPath(Application.persistentDataPath).Replace("\\", "/");
-            var savePath = Path.GetFullPath(ResourcesManager.PatchesSavePath).Replace("\\", "/");
-            if (!persistent.EndsWith("/"))
-                persistent += "/";
-            _patchesSavePrefix = savePath.Replace(persistent, "");
+#if DEBUG
+            AudioEngineBridge.ccau_audio_set_log_callback(LogCallback);
+#endif
+            AudioEngineBridge.LazyInit();
+
+#if ANA_USE_PERSISTENT_DATA_PATH && !UNITY_EDITOR
+            _patchesSavePrefix = Path.GetFullPath(ResourcesManager.PatchesSavePath).Replace("\\", "/");
+#else
+            _patchesSavePrefix = ResourcesManager.StreamingInternalUrlPrefix.Replace("\\", "/");
+#endif
             if (!_patchesSavePrefix.EndsWith("/"))
                 _patchesSavePrefix += "/";
-#endif
+
+            Logger.Debug($"init:::::: completed patchSave {_patchesSavePrefix}");
             
+#if UNITY_EDITOR
+            if (!string.IsNullOrEmpty(_patchesSavePrefix) && Directory.Exists(_patchesSavePrefix))
+                return;
+
+            _patchesSavePrefix = "";
             foreach (var nativeAudioConfig in nativeAudioConfigs)
             {
-                NativeAudioConfigs.Add(nativeAudioConfig.Name, nativeAudioConfig);
-                if (nativeAudioConfig.AutoPreload)
+                if (!NativeAudioConfigs.TryGetValue(nativeAudioConfig.Name, out var dict))
                 {
-                    switch (nativeAudioConfig.Type)
-                    {
-                        case AudioType.Music:
-                            PreloadMusic(nativeAudioConfig.Name);
-                            break;
-                        case AudioType.Sound:
-                            PreloadSound(nativeAudioConfig.Name);
-                            break;
-                        default:
-                            break;
-                    }
+                    dict = new Dictionary<string, NativeAudioConfig>();
+                    NativeAudioConfigs.Add(nativeAudioConfig.Name, dict);
                 }
+
+                if (!PatchAudioConfigs.TryGetValue(nativeAudioConfig.OwnPatch, out var list))
+                {
+                    list = new List<NativeAudioConfig>();
+                    PatchAudioConfigs.Add(nativeAudioConfig.OwnPatch, list);
+                }
+                
+                dict.Add(nativeAudioConfig.OwnPatch, nativeAudioConfig);
+                list.Add(nativeAudioConfig);
+                if (!PatchResourceVersion.ContainsKey(nativeAudioConfig.OwnPatch))
+                    PatchResourceVersion.Add(nativeAudioConfig.OwnPatch, "0.0.0-0");
             }
+#endif
+        }
+
+        private static void LoadAudioConfig(string patchName)
+        {
+            var newVersion = ResourcesManager.Instance.GetPatchVersion(patchName);
+            Logger.Debug($"LoadAudioConfig >>>>>> get version {patchName}:: {newVersion}");
+            if (string.IsNullOrEmpty(newVersion))
+                return;
+
+            if (PatchResourceVersion.TryGetValue(patchName, out var version))
+            {
+                if (version == newVersion)
+                    return;
+                
+#if !UNITY_EDITOR
+                ClearAudioConfig(patchName);
+#endif
+            }
+            
+            var jsonContent = ResourcesManager.Instance.ReadFile($"audio_config_{patchName}.json");
+            if (jsonContent != null)
+            {
+                var json = JsonUtil.FromJson<List<NativeAudioConfig>>(Encoding.UTF8.GetString(jsonContent));
+                if (json != null)
+                {
+                    ClearAudioConfig(patchName);
+                    
+                    foreach (var nativeAudioConfig in json)
+                    {
+                        if (!NativeAudioConfigs.TryGetValue(nativeAudioConfig.Name, out var dict))
+                        {
+                            dict = new Dictionary<string, NativeAudioConfig>();
+                            NativeAudioConfigs.Add(nativeAudioConfig.Name, dict);
+                        }
+
+                        if (!PatchAudioConfigs.TryGetValue(nativeAudioConfig.OwnPatch, out var list))
+                        {
+                            list = new List<NativeAudioConfig>();
+                            PatchAudioConfigs.Add(nativeAudioConfig.OwnPatch, list);
+                        }
+                
+                        dict.Add(nativeAudioConfig.OwnPatch, nativeAudioConfig);
+                        list.Add(nativeAudioConfig);
+                    }
+                    
+                    Logger.Debug($"Add {json.Count} native audio config in patch {patchName}, update to version {newVersion}");
+                }
+                PatchResourceVersion.Add(patchName, newVersion);
+            }
+        }
+
+        public static void ClearAudioConfig(string patchName)
+        {
+            foreach (var pair in NativeAudioConfigs)
+            {
+                pair.Value.Remove(patchName);
+            }
+
+            PatchAudioConfigs.Remove(patchName);
+            PatchResourceVersion.Remove(patchName);
+        }
+
+        public static void Update(float dt)
+        {
+            AudioEngineBridge.Tick(dt);
         }
 
         public static void Release()
         {
-            foreach (var pair in PreloadMusics)
-            {
-                ANAMusic.release(pair.Value);
-            }
-
-            foreach (var pair in PreloadSounds)
-            {
-                AndroidNativeAudio.unload(pair.Value);
-            }
+            AudioEngineBridge.UncacheAll();
             
             PreloadMusics.Clear();
             PreloadSounds.Clear();
-            LoadingMusics.Clear();
-            LoadingSounds.Clear();
+        }
+
+        public static void Purge()
+        {
+            AudioEngineBridge.End();
         }
 
         public static void PreloadMusic(string name)
         {
+            if (string.IsNullOrEmpty(name))
+                return;
+
+            name = name.ToLower();
+            if (!NativeAudioConfigs.ContainsKey(name))
+                return;
+            
     // #if UNITY_ANDROID && !UNITY_EDITOR
             PreloadAnaMusic(name);
     // #endif
@@ -147,251 +257,253 @@ namespace PluginSet.AndroidNativeAudio
 
         public static void PreloadSound(string name)
         {
+            if (string.IsNullOrEmpty(name))
+                return;
+
+            name = name.ToLower();
+            if (!NativeAudioConfigs.ContainsKey(name))
+                return;
+            
 // #if UNITY_ANDROID && !UNITY_EDITOR
             PreloadAnaSound(name);
 // #endif
         }
 
+        public static void PreloadAllInPatch(string patchName)
+        {
+            Logger.Debug($"PreloadAllInPatch >>>>>>>>>>>>>>>>> {patchName}");
+            LoadAudioConfig(patchName);
+            
+            if (!PatchAudioConfigs.TryGetValue(patchName, out var list))
+                return;
+
+            foreach (var config in list)
+            {
+                switch (config.Type)
+                {
+                    case AudioType.Music:
+                        PreloadAnaMusic(CacheKey(config), GetFileName(config));
+                        break;
+                    case AudioType.Sound:
+                        PreloadAnaSound(CacheKey(config), GetFileName(config));
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
         public static void ReleaseMusic(string name)
         {
-            var key = CacheKey(name);
-            if (PreloadMusics.TryGetValue(key, out var id))
+            var config = GetAudio(name);
+            if (!config.HasValue)
             {
-                ANAMusic.release(id);
+                ReleaseAnaMusic(name);
+            }
+            else
+            {
+                ReleaseAnaMusic(CacheKey(config.Value));
+            }
+        }
+
+        private static void ReleaseAnaMusic(string key)
+        {
+            if (PreloadMusics.TryGetValue(key, out var fileName))
+            {
+                AudioEngineBridge.Uncache(fileName);
                 PreloadMusics.Remove(key);
             }
-
-            LoadingMusics.Remove(key);
         }
 
         public static void ReleaseSound(string name)
         {
-            var key = CacheKey(name);
-            if (PreloadSounds.TryGetValue(key, out var id))
+            var config = GetAudio(name);
+            if (!config.HasValue)
             {
-                AndroidNativeAudio.unload(id);
-                PreloadSounds.Remove(key);
-            }
-
-            LoadingSounds.Remove(key);
-        }
-        
-        private static int PreloadAnaMusic(string name)
-        {
-            var fileName =  GetFileName(name);
-            Logger.Debug($"PreloadAnaMusic ==================== = {name}:: {fileName}");
-            if (string.IsNullOrEmpty(fileName))
-                return -1;
-            
-            var key = CacheKey(name);
-            if (PreloadMusics.TryGetValue(key, out var streamId))
-                return streamId;
-            
-            if (!LoadingMusics.Add(key))
-                return -1;
-
-            var id = ANAMusic.load(fileName, UsePersistentDataPath, true, id =>
-            {
-                if (!LoadingMusics.Contains(key))
-                {
-                    if (id != -1)
-                        ANAMusic.release(id);
-                    return;
-                }
-                
-                LoadingMusics.Remove(key);
-                if (id == -1) return;
-                
-                if (PreloadMusics.TryGetValue(key, out var value))
-                {
-                    Logger.Warn($"PreloadAnaMusic ============= callback preload music repeated >> {name}: {key} >>  {value}:: {id} ");
-                    if (value != id)
-                    {
-                        ANAMusic.release(value);
-                    }
-                }
-                else
-                {
-                    PreloadMusics.Add(key, id);
-                    if (_currentMusic == name && !_isPaused)
-                    {
-                        PlayAnaMusicInternal(id, false);
-                    }
-                }
-            });
-
-            // 确保已加载完，在此不返回id
-            // if (id != -1)
-            // {
-            //     _loadingMusics.Remove(key);
-            //     _preloadMusics.Add(key, id);
-            // }
-            
-            return -1;
-        }
-
-        private static int PreloadAnaSound(string name)
-        {
-            var fileName = GetFileName(name);
-            Logger.Debug($"PreloadAnaSound ==================== = {name}:: {fileName}");
-            if (string.IsNullOrEmpty(fileName))
-                return -1;
-            
-            var key =  CacheKey(name);
-            if (PreloadSounds.TryGetValue(key, out var streamId))
-                return streamId;
-            
-            if (!LoadingSounds.Add(key))
-                return -1;
-
-            var id = AndroidNativeAudio.load(fileName, UsePersistentDataPath, id =>
-            {
-                if (!LoadingSounds.Contains(key))
-                {
-                    if (id != -1)
-                        AndroidNativeAudio.unload(id);
-                    return;
-                }
-
-                LoadingSounds.Remove(key);
-                if (id == -1) return;
-                
-                if (PreloadSounds.TryGetValue(key, out var value))
-                {
-                    Logger.Warn($"PreloadAnaSound ============= callback preload music repeated >> {name}: {key} >>  {value}:: {id} ");
-                    if (value != id)
-                    {
-                        AndroidNativeAudio.unload(value);
-                    }
-                }
-                else
-                {
-                    PreloadSounds.Add(key, id);
-                }
-            });
-
-            // 确保已加载完，在此不返回id
-            // if (id != -1)
-            // {
-            //     _loadingSounds.Remove(key);
-            //     _preloadSounds.Add(key, id);
-            // }
-
-            return -1;
-        }
-
-        private static void PlayAnaMusicInternal(int id, bool replay)
-        {
-            Logger.Debug($"PlayAnaMusicInternal =============  {id}");
-            _currentMusicId = id;
-            ANAMusic.play(id);
-            ANAMusic.setLooping(id, true);
-            ANAMusic.setVolume(id, _musicBaseVolume, _musicBaseVolume);
-            if (replay)
-                ANAMusic.seekTo(id, 0);
-        }
-
-        private static void PlayAnaMusic(string musicName, bool replay)
-        {
-            var id = PreloadAnaMusic(musicName);
-            if (id != -1)
-            {
-                PlayAnaMusicInternal(id, replay);
+                ReleaseAnaSound(name);
             }
             else
             {
-                // 标记需要使用ana进行播放
-                _currentMusicId = -2;
+                ReleaseAnaSound(CacheKey(config.Value));
             }
         }
 
-        private static void PlayAnaSound(string soundName, float  volume = 1, int priority = 1)
+        private static void ReleaseAnaSound(string key)
         {
-            var id = PreloadAnaSound(soundName);
-            if (id == -1) return;
-            AndroidNativeAudio.play(id, volume, volume, priority);
+            if (PreloadSounds.TryGetValue(key, out var fileName))
+            {
+                AudioEngineBridge.Uncache(fileName);
+                PreloadSounds.Remove(key);
+            }
+        }
+            
+
+        public static void ReleaseAllInPatch(string patchName)
+        {
+            if (!PatchAudioConfigs.TryGetValue(patchName, out var list))
+                return;
+
+            foreach (var config in list)
+            {
+                switch (config.Type)
+                {
+                    case AudioType.Music:
+                        ReleaseAnaMusic(CacheKey(config));
+                        break;
+                    case AudioType.Sound:
+                        ReleaseAnaSound(CacheKey(config));
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+        private static void PreloadInternal(string fileName)
+        {
+            AudioEngineBridge.Preload(fileName);
+        }
+
+        private static string PreloadAnaMusic(string key, string fileName)
+        {
+            Logger.Debug($"PreloadAnaMusic ==================== = {key}:: {fileName}");
+            if (string.IsNullOrEmpty(fileName))
+                return fileName;
+            
+            if (PreloadMusics.ContainsKey(key))
+            {
+                Logger.Debug($"PreloadAnaMusic ==================== return preload {key} fileName = :: {fileName}");
+                return fileName;
+            }
+            
+            PreloadInternal(fileName);
+            PreloadMusics.Add(key, fileName);
+            return fileName;
         }
         
-        public static bool PlayMusic(string musicName, bool replay = false)
+        private static string PreloadAnaMusic(string name)
         {
-            if (!NativeAudioConfigs.ContainsKey(musicName))
-                return false;
+            var config = GetAudio(name);
+            if (!config.HasValue)
+            {
+                return PreloadAnaMusic(name, name);
+            }
+            else
+            {
+                return PreloadAnaMusic(CacheKey(config.Value), GetFileName(config.Value));
+            }
+        }
+
+        private static string PreloadAnaSound(string key, string fileName)
+        {
+            Logger.Debug($"PreloadAnaSound ==================== = {key}:: {fileName}");
+            if (string.IsNullOrEmpty(fileName))
+                return fileName;
             
-            if (!replay && musicName == _currentMusic) return true;
-            StopMusic();
+            if (PreloadSounds.ContainsKey(key))
+            {
+                Logger.Debug($"PreloadAnaSound ==================== preload = {key}:: fileName::  {fileName}");
+                return fileName;
+            }
             
-            if (string.IsNullOrEmpty(musicName))
-                return true;
+            PreloadInternal(fileName);
+            PreloadSounds.Add(key, fileName);
+            return fileName;
+        }
+
+        private static string PreloadAnaSound(string name)
+        {
+            var config = GetAudio(name);
+            if (!config.HasValue)
+            {
+                return PreloadAnaSound(name, name);
+            }
+            else
+            {
+                return PreloadAnaSound(CacheKey(config.Value), GetFileName(config.Value));
+            }
+        }
+        
+        public static void PlayMusic(string musicName, bool replay = false)
+        {
+            var fileName = PreloadAnaMusic(musicName);
+            if (string.IsNullOrEmpty(fileName))
+                return;
             
+            if (replay)
+                AudioEngineBridge.StopMusic();
+            
+            AudioEngineBridge.PlayMusic(fileName, _musicBaseVolume, true);
             _currentMusic = musicName;
-            if (_isPaused) return true;
-            
-            PlayAnaMusic(musicName, replay);
-            return true;
+            if (!_musicEnable)
+                AudioEngineBridge.PauseMusic();
         }
 
         public static void StopMusic(string musicName = "")
         {
-            if (!string.IsNullOrEmpty(musicName) &&  musicName != _currentMusic) return;
-            
-            // stop ana music
-            if (_currentMusicId >= 0)
+            if (string.IsNullOrEmpty(musicName) || musicName == _currentMusic)
             {
-                ANAMusic.pause(_currentMusicId);
-            }
-            _currentMusicId = -1;
-            _currentMusic = null;
-        }
-
-        private static void CheckResumeMusic()
-        {
-            if (!_isPaused && _musicBaseVolume > 0)
-            {
-                ANAMusic.resumeAll();
-                if (!string.IsNullOrEmpty(_currentMusic) && _currentMusicId == -2)
-                    PlayMusic(_currentMusic, true);
+                AudioEngineBridge.StopMusic();
             }
         }
 
-        public static bool PlaySound(string soundName, float volume = 1, int priority = 1)
+        public static void PlaySound(string soundName, float volume = -1)
         {
-            if (!NativeAudioConfigs.ContainsKey(soundName))
-                return false;
+            var fileName = PreloadAnaSound(soundName);
+            if (string.IsNullOrEmpty(fileName))
+                return;
+
+            if (volume < 0)
+                volume = _soundBaseVolume;
             
-            if (_isPaused) return true;
-            
-            PlayAnaSound(soundName, volume * _soundBaseVolume, 65535 - priority);
-            return true;
+            AudioEngineBridge.PlaySound(fileName, volume, false);
         }
 
         public static void SetMusicVolume(float volume)
         {
-            var lastVolume = _musicBaseVolume;
             _musicBaseVolume = volume;
-            if (_currentMusicId >= 0)
-            {
-                ANAMusic.setVolume(_currentMusicId, volume, volume);
-            }
-            if (volume <= 0 && lastVolume > 0)
-            {
-                ANAMusic.pauseAll();
-            } else if (lastVolume <= 0 && volume > 0)
-            {
-                CheckResumeMusic();
-            }
+            AudioEngineBridge.SetMusicVolume(_musicEnable ? volume : 0);
         }
 
         public static void SetSoundVolume(float volume)
         {
-            var lastVolume = _soundBaseVolume;
             _soundBaseVolume = volume;
-            if (volume <= 0 && lastVolume > 0)
-            {
-                AndroidNativeAudio.pauseAll();
-            } else if (lastVolume <= 0 && volume > 0)
-            {
-                AndroidNativeAudio.resumeAll();
-            }
+            AudioEngineBridge.SetSoundVolume(volume);
+        }
+
+        public static void SetMusicEnable(bool enable)
+        {
+            if (_musicEnable == enable)
+                return;
+
+            _musicEnable = enable;
+            AudioEngineBridge.SetMusicVolume(enable ? _musicBaseVolume : 0);
+            if (enable)
+                AudioEngineBridge.ResumeMusic();
+            else
+                AudioEngineBridge.PauseMusic();
+        }
+
+        public static void SetSoundEnable(bool enable)
+        {
+            if (_soundEnable == enable)
+                return;
+
+            _soundEnable = enable;
+            AudioEngineBridge.SetSoundEnabled(enable);
+            if (!enable)
+                AudioEngineBridge.StopAllSounds();
+        }
+
+        public static void PauseMusic()
+        {
+            AudioEngineBridge.PauseMusic();
+        }
+
+        public static void ResumeMusic()
+        {
+            AudioEngineBridge.ResumeMusic();
         }
     }
 }
+#endif

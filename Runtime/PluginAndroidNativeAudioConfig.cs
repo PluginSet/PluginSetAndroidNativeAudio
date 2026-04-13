@@ -10,19 +10,21 @@ namespace PluginSet.AndroidNativeAudio
         Sound
     }
     
+    [Serializable]
+    public struct NativeAudioConfig
+    {
+        public AudioType Type;
+        public string Name;
+        public string FileName;
+        public string AssetPath;
+        public string OwnPatch;
+        public string BundleName;
+    }
+    
     public class PluginAndroidNativeAudioConfig : ScriptableObject
     {
-        [Serializable]
-        public struct NativeAudioConfig
-        {
-            public AudioType Type;
-            public string Name;
-            public AudioClip Asset;
-            public string AssetPath;
-            public bool AutoPreload;
-        }
-
-        public int MaxSoundStream;
         public List<NativeAudioConfig> NativeAudioConfigs = new List<NativeAudioConfig>();
+        
+        public bool AutoLoadAllAudios = true;
     }
 }

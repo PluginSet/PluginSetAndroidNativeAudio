@@ -1,3 +1,4 @@
+#if ENABLE_ANA_PLUGIN
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -15,15 +16,17 @@ namespace PluginSet.AndroidNativeAudio
         
         public bool IsRunning { get; private set; }
 
-        private int _maxSoundStream;
-        private List<PluginAndroidNativeAudioConfig.NativeAudioConfig> _audioConfigs;
+        private List<NativeAudioConfig> _audioConfigs;
+        private bool _autoPreloadAllAudios = false;
 
         protected override void Init(PluginSetConfig config)
         {
-            _audioConfigs = new List<PluginAndroidNativeAudioConfig.NativeAudioConfig>();
+            _audioConfigs = new List<NativeAudioConfig>();
             var cfg = config.Get<PluginAndroidNativeAudioConfig>();
-            _maxSoundStream = cfg.MaxSoundStream;
+            _autoPreloadAllAudios = cfg.AutoLoadAllAudios;
+#if UNITY_EDITOR
             _audioConfigs.AddRange(cfg.NativeAudioConfigs);
+#endif
             
             AddEventListener(PluginConstants.NOTIFY_APPLICATION_ENTER_BACKGROUND, () =>
             {
@@ -34,11 +37,35 @@ namespace PluginSet.AndroidNativeAudio
             {
                 ANASoundsManager.OnApplicationPause(false);
             });
+
+            if (_autoPreloadAllAudios)
+            {
+                AddEventListener(PluginConstants.NOTIFY_ON_SEARCH_PATH_ADDED, (context) =>
+                {
+                    var patchName = (string)context.Data;
+                    ANASoundsManager.PreloadAllInPatch(patchName);
+                });
+                
+                AddEventListener(PluginConstants.NOTIFY_ON_SEARCH_PATH_REMOVE, (context) =>
+                {
+                    var patchName = (string)context.Data;
+                    ANASoundsManager.ReleaseAllInPatch(patchName);
+                });
+            }
         }
 
         public IEnumerator StartPlugin()
         {
-            ANASoundsManager.Init(_maxSoundStream, _audioConfigs);
+            ANASoundsManager.Init(_audioConfigs);
+            if (_autoPreloadAllAudios)
+            {
+                ANASoundsManager.PreloadAllInPatch(ResourcesManager.Instance.StreamingAssetsName);
+                ANASoundsManager.Logger.Debug($"start preload patches : {string.Join(",", ResourcesManager.Instance.SearchPaths)}");
+                foreach (var patch in ResourcesManager.Instance.SearchPaths)
+                {
+                    ANASoundsManager.PreloadAllInPatch(patch);
+                }
+            }
             IsRunning = true;
             yield break;
         }
@@ -46,6 +73,14 @@ namespace PluginSet.AndroidNativeAudio
         public void DisposePlugin(bool isAppQuit = false)
         {
             ANASoundsManager.Release();
+            if (isAppQuit)
+                ANASoundsManager.Purge();
+            IsRunning = false;
+        }
+
+        private void Update()
+        {
+            ANASoundsManager.Update(Time.deltaTime);
         }
 
         private void OnApplicationPause(bool pauseStatus)
@@ -54,3 +89,4 @@ namespace PluginSet.AndroidNativeAudio
         }
     }
 }
+#endif
