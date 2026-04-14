@@ -115,6 +115,7 @@ namespace PluginSet.AndroidNativeAudio.Editor
                         throw new Exception("Cannot find Audio file: " + file);
 
                     var copyPath = $"{Path.GetFileName(info.Name)}_{patchName}" + Path.GetExtension(file);
+                    copyPath = copyPath.ToLower();
                     var fullPath = Path.GetFullPath(Path.Combine(streamingPath, copyPath));
                     Global.CheckAndCopyFile(file, fullPath);
                     
@@ -127,6 +128,8 @@ namespace PluginSet.AndroidNativeAudio.Editor
                         AssetPath = info.File,
                         BundleName = info.Bundle,
                     };
+                    if (Application.isBatchMode)
+                        item.AssetPath = string.Empty;
                     configs.Add(item);
                 }
             }
@@ -149,6 +152,7 @@ namespace PluginSet.AndroidNativeAudio.Editor
                         throw new Exception("Cannot find Audio file: " + file);
 
                     var copyPath = $"{Path.GetFileName(info.Name)}_{patchName}" + Path.GetExtension(file);
+                    copyPath = copyPath.ToLower();
                     var fullPath = Path.GetFullPath(Path.Combine(streamingPath, copyPath));
                     Global.CheckAndCopyFile(file, fullPath);
                     
@@ -161,6 +165,8 @@ namespace PluginSet.AndroidNativeAudio.Editor
                         AssetPath = info.File,
                         BundleName = info.Bundle,
                     };
+                    if (Application.isBatchMode)
+                        item.AssetPath = string.Empty;
                     configs.Add(item);
                 }
             }
