@@ -180,7 +180,7 @@ namespace PluginSet.AndroidNativeAudio
 #endif
             }
             
-            var jsonContent = ResourcesManager.Instance.ReadFile($"audio_config_{patchName}.json");
+            var jsonContent = ResourcesManager.Instance.ReadFile($"audio_config_{patchName.ToLower()}.json");
             if (jsonContent != null)
             {
                 var json = JsonUtil.FromJson<List<NativeAudioConfig>>(Encoding.UTF8.GetString(jsonContent));

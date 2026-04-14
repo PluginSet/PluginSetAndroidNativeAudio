@@ -171,7 +171,7 @@ namespace PluginSet.AndroidNativeAudio.Editor
                 }
             }
 
-            var audioJsonFile = Path.Combine(streamingPath, $"audio_config_{streamingName}.json");
+            var audioJsonFile = Path.Combine(streamingPath, $"audio_config_{streamingName.ToLower()}.json");
             File.WriteAllText(audioJsonFile, JsonUtil.ToJson(configs));
             musicPatchFiles.Clear();
             soundPatchFiles.Clear();
