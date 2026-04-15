@@ -1,7 +1,4 @@
 #if ENABLE_ANA_PLUGIN
-#if UNITY_EDITOR
-// #define USE_RESOURCE_CONFIG
-#endif
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -20,8 +17,7 @@ namespace PluginSet.AndroidNativeAudio
         private static readonly int InvalidAudioId = AudioEngineBridge.InvalidAudioId;
         
         private static bool _isPaused = false;
-        private static readonly Dictionary<string, string> PreloadMusics = new Dictionary<string, string>();
-        private static readonly Dictionary<string, string> PreloadSounds = new Dictionary<string, string>();
+        private static readonly Dictionary<string, string> PreloadAudios = new Dictionary<string, string>();
         
         private static float _musicBaseVolume = 1.0f;
         private static float _soundBaseVolume = 1.0f;
@@ -117,7 +113,6 @@ namespace PluginSet.AndroidNativeAudio
 
         public static void Init(List<NativeAudioConfig> nativeAudioConfigs)
         {
-            Logger.SetLocalLevel(0);
             NativeAudioConfigs.Clear();
             _round++;
 
@@ -232,31 +227,26 @@ namespace PluginSet.AndroidNativeAudio
         {
             AudioEngineBridge.UncacheAll();
             
-            PreloadMusics.Clear();
-            PreloadSounds.Clear();
+            PreloadAudios.Clear();
         }
 
         public static void Purge()
         {
             AudioEngineBridge.End();
         }
-
+        
         public static void PreloadMusic(string name)
         {
-            if (string.IsNullOrEmpty(name))
-                return;
-
-            name = name.ToLower();
-            if (!NativeAudioConfigs.ContainsKey(name))
-                return;
-            
-    // #if UNITY_ANDROID && !UNITY_EDITOR
-            PreloadAnaMusic(name);
-    // #endif
+            PreloadAudio(name);
         }
 
         public static void PreloadSound(string name)
         {
+            PreloadAudio(name);
+        }
+
+        public static void PreloadAudio(string name)
+        {
             if (string.IsNullOrEmpty(name))
                 return;
 
@@ -264,9 +254,7 @@ namespace PluginSet.AndroidNativeAudio
             if (!NativeAudioConfigs.ContainsKey(name))
                 return;
             
-// #if UNITY_ANDROID && !UNITY_EDITOR
-            PreloadAnaSound(name);
-// #endif
+            PreloadAnaAudio(name);
         }
 
         public static void PreloadAllInPatch(string patchName)
@@ -279,61 +267,39 @@ namespace PluginSet.AndroidNativeAudio
 
             foreach (var config in list)
             {
-                switch (config.Type)
-                {
-                    case AudioType.Music:
-                        PreloadAnaMusic(CacheKey(config), GetFileName(config));
-                        break;
-                    case AudioType.Sound:
-                        PreloadAnaSound(CacheKey(config), GetFileName(config));
-                        break;
-                    default:
-                        break;
-                }
+                PreloadAnaAudio(CacheKey(config), GetFileName(config));
             }
         }
 
         public static void ReleaseMusic(string name)
         {
-            var config = GetAudio(name);
-            if (!config.HasValue)
-            {
-                ReleaseAnaMusic(name);
-            }
-            else
-            {
-                ReleaseAnaMusic(CacheKey(config.Value));
-            }
-        }
-
-        private static void ReleaseAnaMusic(string key)
-        {
-            if (PreloadMusics.TryGetValue(key, out var fileName))
-            {
-                AudioEngineBridge.Uncache(fileName);
-                PreloadMusics.Remove(key);
-            }
+            ReleaseAudio(name);
         }
 
         public static void ReleaseSound(string name)
         {
+            ReleaseAudio(name);
+        }
+        
+        public static void ReleaseAudio(string name)
+        {
             var config = GetAudio(name);
             if (!config.HasValue)
             {
-                ReleaseAnaSound(name);
+                ReleaseAnaAudio(name);
             }
             else
             {
-                ReleaseAnaSound(CacheKey(config.Value));
+                ReleaseAnaAudio(CacheKey(config.Value));
             }
         }
 
-        private static void ReleaseAnaSound(string key)
+        private static void ReleaseAnaAudio(string key)
         {
-            if (PreloadSounds.TryGetValue(key, out var fileName))
+            if (PreloadAudios.TryGetValue(key, out var fileName))
             {
                 AudioEngineBridge.Uncache(fileName);
-                PreloadSounds.Remove(key);
+                PreloadAudios.Remove(key);
             }
         }
             
@@ -345,88 +311,43 @@ namespace PluginSet.AndroidNativeAudio
 
             foreach (var config in list)
             {
-                switch (config.Type)
-                {
-                    case AudioType.Music:
-                        ReleaseAnaMusic(CacheKey(config));
-                        break;
-                    case AudioType.Sound:
-                        ReleaseAnaSound(CacheKey(config));
-                        break;
-                    default:
-                        break;
-                }
+                ReleaseAnaAudio(CacheKey(config));
             }
         }
 
-        private static void PreloadInternal(string fileName)
-        {
-            AudioEngineBridge.Preload(fileName);
-        }
-
-        private static string PreloadAnaMusic(string key, string fileName)
-        {
-            Logger.Debug($"PreloadAnaMusic ==================== = {key}:: {fileName}");
-            if (string.IsNullOrEmpty(fileName))
-                return fileName;
-            
-            if (PreloadMusics.ContainsKey(key))
-            {
-                Logger.Debug($"PreloadAnaMusic ==================== return preload {key} fileName = :: {fileName}");
-                return fileName;
-            }
-            
-            PreloadInternal(fileName);
-            PreloadMusics.Add(key, fileName);
-            return fileName;
-        }
-        
-        private static string PreloadAnaMusic(string name)
-        {
-            var config = GetAudio(name);
-            if (!config.HasValue)
-            {
-                return PreloadAnaMusic(name, name);
-            }
-            else
-            {
-                return PreloadAnaMusic(CacheKey(config.Value), GetFileName(config.Value));
-            }
-        }
-
-        private static string PreloadAnaSound(string key, string fileName)
+        private static string PreloadAnaAudio(string key, string fileName)
         {
             Logger.Debug($"PreloadAnaSound ==================== = {key}:: {fileName}");
             if (string.IsNullOrEmpty(fileName))
                 return fileName;
             
-            if (PreloadSounds.ContainsKey(key))
+            if (PreloadAudios.ContainsKey(key))
             {
                 Logger.Debug($"PreloadAnaSound ==================== preload = {key}:: fileName::  {fileName}");
                 return fileName;
             }
             
-            PreloadInternal(fileName);
-            PreloadSounds.Add(key, fileName);
+            AudioEngineBridge.Preload(fileName);
+            PreloadAudios.Add(key, fileName);
             return fileName;
         }
 
-        private static string PreloadAnaSound(string name)
+        private static string PreloadAnaAudio(string name)
         {
             var config = GetAudio(name);
             if (!config.HasValue)
             {
-                return PreloadAnaSound(name, name);
+                return PreloadAnaAudio(name, name);
             }
             else
             {
-                return PreloadAnaSound(CacheKey(config.Value), GetFileName(config.Value));
+                return PreloadAnaAudio(CacheKey(config.Value), GetFileName(config.Value));
             }
         }
         
         public static void PlayMusic(string musicName, bool replay = false)
         {
-            var fileName = PreloadAnaMusic(musicName);
+            var fileName = PreloadAnaAudio(musicName);
             if (string.IsNullOrEmpty(fileName))
                 return;
             
@@ -449,12 +370,17 @@ namespace PluginSet.AndroidNativeAudio
 
         public static void PlaySound(string soundName, float volume = -1)
         {
-            var fileName = PreloadAnaSound(soundName);
+            if (!_soundEnable)
+                return;
+            
+            var fileName = PreloadAnaAudio(soundName);
             if (string.IsNullOrEmpty(fileName))
                 return;
 
             if (volume < 0)
                 volume = _soundBaseVolume;
+            else
+                volume = _soundBaseVolume * volume;
             
             AudioEngineBridge.PlaySound(fileName, volume, false);
         }

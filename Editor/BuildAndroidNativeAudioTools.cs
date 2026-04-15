@@ -42,40 +42,16 @@ namespace PluginSet.AndroidNativeAudio.Editor
             var config = pluginConfig.AddConfig<PluginAndroidNativeAudioConfig>("NativeAudioConfig");
             config.AutoLoadAllAudios = buildParams.AutoLoadAllAudios;
 
-            var musicPatchFiles = context.GetMusicPatchFiles();
+            var audioPatchFiles = context.GetAudioPatchFiles();
             if (!Application.isBatchMode)
             {
-                foreach (var pair in musicPatchFiles)
+                foreach (var pair in audioPatchFiles)
                 {
                     var patchName = pair.Key;
                     foreach (var info in pair.Value)
                     {
                         var item = new NativeAudioConfig()
                         {
-                            Type = AudioType.Music,
-                            Name = info.Name.ToLower(),
-                            FileName = $"{Path.GetFileName(info.Name)}_{patchName}" + Path.GetExtension(info.File),
-                            OwnPatch = patchName,
-                            AssetPath = info.File,
-                            BundleName = info.Bundle
-                        };
-                        config.NativeAudioConfigs.Add(item);
-                    }
-                }
-            }
-            musicPatchFiles.Clear();
-
-            var soundPatchFiles = context.GetSoundPatchFiles();
-            if (!Application.isBatchMode)
-            {
-                foreach (var pair in soundPatchFiles)
-                {
-                    var patchName = pair.Key;
-                    foreach (var info in pair.Value)
-                    {
-                        var item = new NativeAudioConfig()
-                        {
-                            Type = AudioType.Sound,
                             Name = info.Name.ToLower(),
                             FileName = $"{Path.GetFileName(info.Name)}_{patchName}" + Path.GetExtension(info.File),
                             OwnPatch = patchName,
@@ -86,7 +62,7 @@ namespace PluginSet.AndroidNativeAudio.Editor
                     }
                 }
             }
-            soundPatchFiles.Clear();
+            audioPatchFiles.Clear();
         }
         
         [OnBuildBundlesCompleted]
@@ -97,45 +73,8 @@ namespace PluginSet.AndroidNativeAudio.Editor
                 return;
 
             var configs = new List<NativeAudioConfig>();
-            var musicPatchFiles = context.GetMusicPatchFiles();
-            foreach (var pair in musicPatchFiles)
-            {
-                var patchName = pair.Key;
-                if (patchName != streamingName)
-                {
-                    Debug.LogError($"Music patch file own by {patchName} is collected when build {streamingName}");
-                    continue;
-                }
-                
-                foreach (var info in pair.Value)
-                {
-                    var file = info.File;
-                    file = Path.Combine(Application.dataPath, "..", file);
-                    if (string.IsNullOrEmpty(file) || !File.Exists(file))
-                        throw new Exception("Cannot find Audio file: " + file);
-
-                    var copyPath = $"{Path.GetFileName(info.Name)}_{patchName}" + Path.GetExtension(file);
-                    copyPath = copyPath.ToLower();
-                    var fullPath = Path.GetFullPath(Path.Combine(streamingPath, copyPath));
-                    Global.CheckAndCopyFile(file, fullPath);
-                    
-                    var item = new NativeAudioConfig()
-                    {
-                        Type = AudioType.Music,
-                        Name = info.Name.ToLower(),
-                        FileName = copyPath,
-                        OwnPatch = patchName,
-                        AssetPath = info.File,
-                        BundleName = info.Bundle,
-                    };
-                    if (Application.isBatchMode)
-                        item.AssetPath = string.Empty;
-                    configs.Add(item);
-                }
-            }
-
-            var soundPatchFiles = context.GetSoundPatchFiles();
-            foreach (var pair in soundPatchFiles)
+            var audioPatchFiles = context.GetAudioPatchFiles();
+            foreach (var pair in audioPatchFiles)
             {
                 var patchName = pair.Key;
                 if (patchName != streamingName)
@@ -158,7 +97,6 @@ namespace PluginSet.AndroidNativeAudio.Editor
                     
                     var item = new NativeAudioConfig()
                     {
-                        Type = AudioType.Sound,
                         Name = info.Name.ToLower(),
                         FileName = copyPath,
                         OwnPatch = patchName,
@@ -173,8 +111,7 @@ namespace PluginSet.AndroidNativeAudio.Editor
 
             var audioJsonFile = Path.Combine(streamingPath, $"audio_config_{streamingName.ToLower()}.json");
             File.WriteAllText(audioJsonFile, JsonUtil.ToJson(configs));
-            musicPatchFiles.Clear();
-            soundPatchFiles.Clear();
+            audioPatchFiles.Clear();
         }
     }
 }

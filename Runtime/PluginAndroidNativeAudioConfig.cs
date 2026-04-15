@@ -4,16 +4,9 @@ using UnityEngine;
 
 namespace PluginSet.AndroidNativeAudio
 {
-    public enum AudioType
-    {
-        Music,
-        Sound
-    }
-    
     [Serializable]
     public struct NativeAudioConfig
     {
-        public AudioType Type;
         public string Name;
         public string FileName;
         public string AssetPath;
